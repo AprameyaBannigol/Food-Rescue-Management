@@ -1,0 +1,388 @@
+// Food rescue app: Prisma schema
+// Mirrors the 13 entities of the Chen ER diagram (USER, DONOR, NGO, VOLUNTEER,
+// LISTING, FOOD_ITEM, CLAIM, DELIVERY, OFFER, FEEDBACK, ISSUE, STATUS_EVENT, CONFIG).
+//
+// Composite attributes from the ER diagram are flattened into columns:
+//   location         -> lat, lng (+ a PostGIS `geo` column generated from them)
+//   open_hours       -> open_from, open_to ("HH:MM", Asia/Kolkata)
+//   pickup_window    -> pickup_from, pickup_until
+//   current_location -> current_lat, current_lng (+ `current_geo`)
+//
+// Rules Prisma cannot express (check constraints, the partial unique index on
+// active deliveries, and making the PostGIS columns GENERATED from lat/lng) live
+// in the hand-written SQL of the first migration.
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [postgis]
+}
+
+// ---------- Enums ----------
+
+enum Role {
+  donor
+  ngo
+  volunteer
+  admin
+}
+
+enum UserStatus {
+  pending
+  verified
+  suspended
+}
+
+enum DonorType {
+  hotel
+  restaurant
+  mess
+  caterer
+}
+
+enum VehicleType {
+  bike
+  car
+  none
+}
+
+enum FoodType {
+  veg
+  non_veg
+  mixed
+}
+
+// How the food was held after cooking. Decides the FSSAI safe window:
+// hot (above 60°C) or room temperature -> 4 h, chilled (below 5°C) -> 12 h.
+enum FoodHolding {
+  hot
+  room_temp
+  chilled
+}
+
+enum ListingStatus {
+  posted
+  offered
+  partially_claimed
+  fully_claimed
+  expired
+  cancelled
+}
+
+enum ClaimStatus {
+  active
+  delivered
+  failed
+  cancelled
+}
+
+enum DeliveryStatus {
+  unassigned
+  assigned
+  picked_up
+  delivered
+  confirmed
+  failed
+}
+
+enum OfferResponse {
+  none
+  accepted
+  declined
+  expired
+}
+
+enum IssueType {
+  food_quality
+  no_show
+  wrong_quantity
+  safety
+  unmatched      // no NGO claimed after every offer wave (escalation)
+  no_volunteer   // no volunteer accepted within 20 minutes (escalation)
+  other
+}
+
+enum IssueStatus {
+  open
+  in_progress
+  resolved
+}
+
+enum EntityType {
+  listing
+  claim
+  delivery
+  user
+  issue
+}
+
+// ---------- Entities ----------
+
+model User {
+  id        String     @id @default(uuid()) @map("user_id") @db.Uuid
+  name      String?
+  phone     String     @unique
+  role      Role
+  status    UserStatus @default(pending)
+  createdAt DateTime   @default(now()) @map("created_at")
+
+  donor     Donor?
+  ngo       Ngo?
+  volunteer Volunteer?
+
+  offers         Offer[]       @relation("SENT_TO")
+  feedbackGiven  Feedback[]    @relation("GIVES")
+  issuesRaised   Issue[]       @relation("RAISES")
+  issuesResolved Issue[]       @relation("RESOLVES")
+  statusEvents   StatusEvent[] @relation("PERFORMS")
+
+  @@map("users")
+}
+
+model Donor {
+  id             String    @id @default(uuid()) @map("donor_id") @db.Uuid
+  userId         String    @unique @map("user_id") @db.Uuid
+  orgName        String    @map("org_name")
+  type           DonorType
+  fssaiLicenceNo String?   @map("fssai_licence_no")
+  licenceUrl     String?   @map("licence_url")
+  address        String
+  lat            Float
+  lng            Float
+  geo            Unsupported("geography(Point, 4326)")? @default(dbgenerated("(st_setsrid(st_makepoint(lng, lat), 4326))::geography"))
+  verifiedAt     DateTime? @map("verified_at")
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listings Listing[]
+
+  @@index([geo], type: Gist)
+  @@map("donors")
+}
+
+model Ngo {
+  id               String    @id @default(uuid()) @map("ngo_id") @db.Uuid
+  userId           String    @unique @map("user_id") @db.Uuid
+  orgName          String    @map("org_name")
+  regCertNo        String?   @map("reg_cert_no")
+  regCertUrl       String?   @map("reg_cert_url")
+  address          String
+  lat              Float
+  lng              Float
+  geo              Unsupported("geography(Point, 4326)")? @default(dbgenerated("(st_setsrid(st_makepoint(lng, lat), 4326))::geography"))
+  openFrom         String    @default("00:00") @map("open_from") // "HH:MM" IST
+  openTo           String    @default("23:59") @map("open_to")
+  dailyCapacity    Int       @map("daily_capacity") // servings per day
+  vegOnly          Boolean   @default(false) @map("veg_only")
+  reliabilityScore Float     @default(1) @map("reliability_score")
+  verifiedAt       DateTime? @map("verified_at")
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  claims Claim[]
+
+  @@index([geo], type: Gist)
+  @@map("ngos")
+}
+
+model Volunteer {
+  id          String      @id @default(uuid()) @map("volunteer_id") @db.Uuid
+  userId      String      @unique @map("user_id") @db.Uuid
+  vehicle     VehicleType @default(bike)
+  idProofUrl  String?     @map("id_proof_url")
+  isAvailable Boolean     @default(false) @map("is_available")
+  isOnCall    Boolean     @default(false) @map("is_on_call")
+  currentLat  Float?      @map("current_lat")
+  currentLng  Float?      @map("current_lng")
+  currentGeo  Unsupported("geography(Point, 4326)")? @default(dbgenerated("(st_setsrid(st_makepoint(current_lng, current_lat), 4326))::geography")) @map("current_geo")
+  lastSeenAt  DateTime?   @map("last_seen_at")
+  rating      Float       @default(5)
+  verifiedAt  DateTime?   @map("verified_at")
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries Delivery[]
+
+  @@index([currentGeo], type: Gist)
+  @@map("volunteers")
+}
+
+model Listing {
+  id                String        @id @default(uuid()) @map("listing_id") @db.Uuid
+  donorId           String        @map("donor_id") @db.Uuid
+  title             String
+  foodType          FoodType      @map("food_type")
+  holding           FoodHolding   @default(hot)
+  totalServings     Int           @map("total_servings")
+  remainingServings Int           @map("remaining_servings")
+  packaging         String?
+  cookedAt          DateTime      @map("cooked_at")
+  bestBefore        DateTime      @map("best_before")
+  pickupFrom        DateTime      @map("pickup_from")
+  pickupUntil       DateTime      @map("pickup_until")
+  photoUrl          String?       @map("photo_url")
+  notes             String?
+  status            ListingStatus @default(posted)
+  createdAt         DateTime      @default(now()) @map("created_at")
+
+  donor  Donor      @relation(fields: [donorId], references: [id])
+  items  FoodItem[]
+  claims Claim[]
+  offers Offer[]
+  issues Issue[]
+
+  @@index([status, bestBefore])
+  @@index([donorId])
+  @@map("listings")
+}
+
+// Weak entity: identified by its listing plus item_no.
+model FoodItem {
+  listingId String  @map("listing_id") @db.Uuid
+  itemNo    Int     @map("item_no")
+  name      String
+  quantity  Decimal @db.Decimal(10, 2)
+  unit      String
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Cascade)
+
+  @@id([listingId, itemNo])
+  @@map("food_items")
+}
+
+model Claim {
+  id        String      @id @default(uuid()) @map("claim_id") @db.Uuid
+  listingId String      @map("listing_id") @db.Uuid
+  ngoId     String      @map("ngo_id") @db.Uuid
+  servings  Int
+  claimedAt DateTime    @default(now()) @map("claimed_at")
+  status    ClaimStatus @default(active)
+
+  listing  Listing   @relation(fields: [listingId], references: [id])
+  ngo      Ngo       @relation(fields: [ngoId], references: [id])
+  delivery Delivery?
+
+  @@index([ngoId, claimedAt])
+  @@index([listingId])
+  @@map("claims")
+}
+
+model Delivery {
+  id             String         @id @default(uuid()) @map("delivery_id") @db.Uuid
+  claimId        String         @unique @map("claim_id") @db.Uuid
+  volunteerId    String?        @map("volunteer_id") @db.Uuid
+  status         DeliveryStatus @default(unassigned)
+  pickupCode     String         @map("pickup_code")
+  dropCode       String         @map("drop_code")
+  assignedAt     DateTime?      @map("assigned_at")
+  pickedUpAt     DateTime?      @map("picked_up_at")
+  deliveredAt    DateTime?      @map("delivered_at")
+  confirmedAt    DateTime?      @map("confirmed_at")
+  pickupPhotoUrl String?        @map("pickup_photo_url")
+  dropPhotoUrl   String?        @map("drop_photo_url")
+  pickupLat      Float?         @map("pickup_lat")
+  pickupLng      Float?         @map("pickup_lng")
+  dropLat        Float?         @map("drop_lat")
+  dropLng        Float?         @map("drop_lng")
+  distanceKm     Float?         @map("distance_km")
+  createdAt      DateTime       @default(now()) @map("created_at")
+
+  claim     Claim      @relation(fields: [claimId], references: [id])
+  volunteer Volunteer? @relation(fields: [volunteerId], references: [id])
+  offers    Offer[]
+  feedback  Feedback[]
+  issues    Issue[]
+
+  @@index([status])
+  @@index([volunteerId])
+  @@map("deliveries")
+}
+
+// An offer goes to one user and points at exactly one of a listing (NGO
+// offers) or a delivery (volunteer offers). Enforced by a CHECK constraint.
+model Offer {
+  id              String        @id @default(uuid()) @map("offer_id") @db.Uuid
+  listingId       String?       @map("listing_id") @db.Uuid
+  deliveryId      String?       @map("delivery_id") @db.Uuid
+  recipientUserId String        @map("recipient_user_id") @db.Uuid
+  waveNo          Int           @map("wave_no")
+  score           Float
+  sentAt          DateTime      @default(now()) @map("sent_at")
+  expiresAt       DateTime      @map("expires_at")
+  response        OfferResponse @default(none)
+
+  listing   Listing?  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  delivery  Delivery? @relation(fields: [deliveryId], references: [id], onDelete: Cascade)
+  recipient User      @relation("SENT_TO", fields: [recipientUserId], references: [id])
+
+  @@index([recipientUserId, response])
+  @@index([listingId])
+  @@index([deliveryId])
+  @@map("offers")
+}
+
+model Feedback {
+  id         String   @id @default(uuid()) @map("feedback_id") @db.Uuid
+  deliveryId String   @map("delivery_id") @db.Uuid
+  fromUserId String   @map("from_user_id") @db.Uuid
+  rating     Int
+  foodOk     Boolean  @map("food_ok")
+  comment    String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  delivery Delivery @relation(fields: [deliveryId], references: [id])
+  fromUser User     @relation("GIVES", fields: [fromUserId], references: [id])
+
+  @@index([deliveryId])
+  @@map("feedback")
+}
+
+// An issue is about a listing, a delivery, or both (CHECK: at least one).
+model Issue {
+  id           String      @id @default(uuid()) @map("issue_id") @db.Uuid
+  listingId    String?     @map("listing_id") @db.Uuid
+  deliveryId   String?     @map("delivery_id") @db.Uuid
+  raisedById   String?     @map("raised_by") @db.Uuid // null when the system escalates
+  resolvedById String?     @map("resolved_by") @db.Uuid
+  type         IssueType
+  status       IssueStatus @default(open)
+  description  String?
+  createdAt    DateTime    @default(now()) @map("created_at")
+  resolvedAt   DateTime?   @map("resolved_at")
+
+  listing    Listing?  @relation(fields: [listingId], references: [id])
+  delivery   Delivery? @relation(fields: [deliveryId], references: [id])
+  raisedBy   User?     @relation("RAISES", fields: [raisedById], references: [id])
+  resolvedBy User?     @relation("RESOLVES", fields: [resolvedById], references: [id])
+
+  @@index([status])
+  @@map("issues")
+}
+
+// Append-only history of every status change. entity_type + entity_id point
+// at any table, so that link is kept as plain attributes.
+model StatusEvent {
+  id          String     @id @default(uuid()) @map("event_id") @db.Uuid
+  entityType  EntityType @map("entity_type")
+  entityId    String     @map("entity_id") @db.Uuid
+  fromStatus  String?    @map("from_status")
+  toStatus    String     @map("to_status")
+  actorUserId String?    @map("actor_user_id") @db.Uuid
+  at          DateTime   @default(now())
+  note        String?
+
+  actor User? @relation("PERFORMS", fields: [actorUserId], references: [id])
+
+  @@index([entityType, entityId])
+  @@map("status_events")
+}
+
+model Config {
+  key   String @id
+  value Json
+  city  String @default("hubballi")
+
+  @@map("config")
+}
