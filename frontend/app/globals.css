@@ -1,0 +1,49 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-brand-50: #effaf3;
+  --color-brand-100: #d8f3e1;
+  --color-brand-200: #b3e6c6;
+  --color-brand-300: #80d2a4;
+  --color-brand-400: #4bb77f;
+  --color-brand-500: #289b62;
+  --color-brand-600: #1a7d4e;
+  --color-brand-700: #166441;
+  --color-brand-800: #145036;
+  --color-brand-900: #11422e;
+  --color-saffron-50: #fff8eb;
+  --color-saffron-100: #feebc7;
+  --color-saffron-500: #f59e0b;
+  --color-saffron-600: #d97706;
+  --color-saffron-700: #b45309;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+}
+
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background: #f6f7f5;
+  color: #0f172a;
+}
+
+/* Leaves room for the bottom nav and the iPhone home bar. */
+.pb-nav {
+  padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Leaflet sits under our toasts and nav. */
+.leaflet-container {
+  z-index: 0;
+  font: inherit;
+}
+
+.code-digits {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.3em;
+}

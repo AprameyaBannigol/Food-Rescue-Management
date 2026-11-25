@@ -1,0 +1,27 @@
+{
+  "name": "food-rescue-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Web app (PWA) for the Hubballi surplus food rescue project: donors, NGOs, volunteers and admins.",
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "leaflet": "^1.9.4",
+    "next": "^15.5.29",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "socket.io-client": "^4.8.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.5",
+    "postcss": "^8.5.33",
+    "tailwindcss": "^4.3.5"
+  }
+}
